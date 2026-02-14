@@ -79,60 +79,121 @@ def get_or_create_secret_path(data_dir: Path, custom_path: str = "") -> str:
         return new_path
 
 
-def main() -> int:
-    """Start the Home Assistant MCP Server."""
-    log_info("Starting Home Assistant MCP Server...")
+def _get_oidc_config(config: dict) -> dict[str, str]:
+    """Extract OIDC configuration from add-on options.
 
-    # Read configuration from Supervisor
-    config_file = Path("/data/options.json")
-    data_dir = Path("/data")
-    backup_hint = "normal"  # default
-    custom_secret_path = ""  # default
+    Returns:
+        Dict with OIDC fields that are set (non-empty).
+    """
+    oidc_fields = {
+        "oidc_config_url": config.get("oidc_config_url", ""),
+        "oidc_client_id": config.get("oidc_client_id", ""),
+        "oidc_client_secret": config.get("oidc_client_secret", ""),
+        "oidc_base_url": config.get("oidc_base_url", ""),
+    }
+    return {k: v for k, v in oidc_fields.items() if v and v.strip()}
 
-    if config_file.exists():
-        try:
-            with open(config_file) as f:
-                config = json.load(f)
-            backup_hint = config.get("backup_hint", "normal")
-            custom_secret_path = config.get("secret_path", "")
-        except Exception as e:
-            log_error(f"Failed to read config: {e}, using defaults")
 
-    # Generate or retrieve secret path
-    secret_path = get_or_create_secret_path(data_dir, custom_secret_path)
+def _validate_oidc_config(oidc_config: dict[str, str]) -> str | None:
+    """Validate OIDC configuration completeness.
 
-    log_info(f"Backup hint mode: {backup_hint}")
+    Returns:
+        Error message if partial config detected, None if valid or empty.
+    """
+    all_fields = {"oidc_config_url", "oidc_client_id", "oidc_client_secret", "oidc_base_url"}
+    present = set(oidc_config.keys())
 
-    # Set up environment for ha-mcp
-    os.environ["HOMEASSISTANT_URL"] = "http://supervisor/core"
-    os.environ["BACKUP_HINT"] = backup_hint
+    if not present:
+        return None  # No OIDC config — use secret path mode
 
-    # Validate Supervisor token
-    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
-    if not supervisor_token:
-        log_error("SUPERVISOR_TOKEN not found! Cannot authenticate.")
+    missing = all_fields - present
+    if missing:
+        friendly_names = {
+            "oidc_config_url": "OIDC Discovery URL",
+            "oidc_client_id": "OIDC Client ID",
+            "oidc_client_secret": "OIDC Client Secret",
+            "oidc_base_url": "OIDC Public Base URL",
+        }
+        missing_names = [friendly_names[f] for f in sorted(missing)]
+        return (
+            f"Incomplete OIDC configuration. Missing: {', '.join(missing_names)}. "
+            f"Either set all OIDC fields or leave them all empty to use secret path mode."
+        )
+
+    return None  # All fields present — valid
+
+
+def _run_oidc_mode(oidc_config: dict[str, str], port: int) -> int:
+    """Start the server in OIDC authentication mode.
+
+    Args:
+        oidc_config: Validated OIDC configuration dict.
+        port: Internal container port.
+
+    Returns:
+        Exit code.
+    """
+    # Set OIDC environment variables for ha_mcp.__main__.main_oidc()
+    os.environ["OIDC_CONFIG_URL"] = oidc_config["oidc_config_url"]
+    os.environ["OIDC_CLIENT_ID"] = oidc_config["oidc_client_id"]
+    os.environ["OIDC_CLIENT_SECRET"] = oidc_config["oidc_client_secret"]
+    os.environ["MCP_BASE_URL"] = oidc_config["oidc_base_url"]
+    os.environ["MCP_PORT"] = str(port)
+    os.environ["MCP_SECRET_PATH"] = "/mcp"
+
+    base_url = oidc_config["oidc_base_url"].rstrip("/")
+
+    log_info("")
+    log_info("=" * 80)
+    log_info("  OIDC Authentication Mode")
+    log_info("")
+    log_info(f"  MCP Endpoint: {base_url}/mcp")
+    log_info(f"  OIDC Provider: {oidc_config['oidc_config_url']}")
+    log_info(f"  Auth Callback: {base_url}/auth/callback")
+    log_info("")
+    log_info("  Users must authenticate via your OIDC provider before accessing MCP.")
+    log_info("  Ensure your reverse proxy forwards HTTPS traffic to port %d." % port)
+    log_info("=" * 80)
+    log_info("")
+
+    try:
+        log_info("Starting OIDC-authenticated MCP server...")
+        from ha_mcp.__main__ import main_oidc
+
+        main_oidc()
+    except Exception as e:
+        log_error(f"Failed to start OIDC server: {e}")
+        import traceback
+
+        traceback.print_exc()
         return 1
 
-    os.environ["HOMEASSISTANT_TOKEN"] = supervisor_token
+    return 0
 
-    log_info(f"Home Assistant URL: {os.environ['HOMEASSISTANT_URL']}")
-    log_info("Authentication configured via Supervisor token")
 
-    # Fixed port (internal container port)
-    port = 9583
+def _run_secret_path_mode(secret_path: str, port: int) -> int:
+    """Start the server in secret path mode (no authentication).
 
+    Args:
+        secret_path: The obfuscated URL path.
+        port: Internal container port.
+
+    Returns:
+        Exit code.
+    """
     log_info("")
     log_info("=" * 80)
-    log_info(f"🔐 MCP Server URL: http://<home-assistant-ip>:9583{secret_path}")
+    log_info(f"  MCP Server URL: http://<home-assistant-ip>:{port}{secret_path}")
     log_info("")
-    log_info(f"   Secret Path: {secret_path}")
+    log_info(f"  Secret Path: {secret_path}")
     log_info("")
-    log_info("   ⚠️  IMPORTANT: Copy this exact URL - the secret path is required!")
-    log_info("   💡 This path is auto-generated and persisted to /data/secret_path.txt")
+    log_info("  IMPORTANT: Copy this exact URL - the secret path is required!")
+    log_info("  This path is auto-generated and persisted to /data/secret_path.txt")
+    log_info("")
+    log_info("  TIP: For better security, configure OIDC authentication in the add-on options.")
     log_info("=" * 80)
     log_info("")
 
-    # Import and run MCP server directly
     try:
         log_info("Importing ha_mcp module...")
         from ha_mcp.__main__ import mcp, _get_timestamped_uvicorn_log_config
@@ -154,6 +215,61 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def main() -> int:
+    """Start the Home Assistant MCP Server."""
+    log_info("Starting Home Assistant MCP Server...")
+
+    # Read configuration from Supervisor
+    config_file = Path("/data/options.json")
+    data_dir = Path("/data")
+    config = {}
+
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                config = json.load(f)
+        except Exception as e:
+            log_error(f"Failed to read config: {e}, using defaults")
+
+    backup_hint = config.get("backup_hint", "normal")
+    custom_secret_path = config.get("secret_path", "")
+
+    log_info(f"Backup hint mode: {backup_hint}")
+
+    # Set up environment for ha-mcp
+    os.environ["HOMEASSISTANT_URL"] = "http://supervisor/core"
+    os.environ["BACKUP_HINT"] = backup_hint
+
+    # Validate Supervisor token
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+    if not supervisor_token:
+        log_error("SUPERVISOR_TOKEN not found! Cannot authenticate.")
+        return 1
+
+    os.environ["HOMEASSISTANT_TOKEN"] = supervisor_token
+
+    log_info(f"Home Assistant URL: {os.environ['HOMEASSISTANT_URL']}")
+    log_info("Authentication configured via Supervisor token")
+
+    # Fixed port (internal container port)
+    port = 9583
+
+    # Check for OIDC configuration
+    oidc_config = _get_oidc_config(config)
+    oidc_error = _validate_oidc_config(oidc_config)
+
+    if oidc_error:
+        log_error(oidc_error)
+        return 1
+
+    if oidc_config:
+        return _run_oidc_mode(oidc_config, port)
+
+    # Fall back to secret path mode
+    secret_path = get_or_create_secret_path(data_dir, custom_secret_path)
+    return _run_secret_path_mode(secret_path, port)
 
 
 if __name__ == "__main__":

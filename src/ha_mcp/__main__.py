@@ -675,5 +675,117 @@ async def _run_oauth_server(base_url: str, port: int, path: str) -> None:
     )
 
 
+def main_oidc() -> None:
+    """Run server with OIDC authentication over HTTP.
+
+    This mode enables authentication via an external OIDC provider
+    (Authentik, Keycloak, Auth0, Google, etc.). All authenticated users
+    share the same Home Assistant instance via the configured credentials.
+
+    Unlike OAuth mode which collects per-user HA credentials via a consent form,
+    OIDC mode is purely an access gate — users authenticate through the OIDC provider,
+    then all requests use the shared HA credentials from environment variables.
+
+    Environment:
+    - OIDC_CONFIG_URL (required): OIDC discovery URL (.well-known/openid-configuration)
+    - OIDC_CLIENT_ID (required): OAuth client ID registered with your OIDC provider
+    - OIDC_CLIENT_SECRET (required): OAuth client secret from your OIDC provider
+    - MCP_BASE_URL (required): Public HTTPS URL where this server is accessible
+    - HOMEASSISTANT_URL (required): Home Assistant instance URL
+    - HOMEASSISTANT_TOKEN (required): Home Assistant long-lived access token or supervisor token
+    - MCP_PORT (optional, default: 8086)
+    - MCP_SECRET_PATH (optional, default: "/mcp")
+    - LOG_LEVEL (optional, default: INFO)
+    """
+    # Validate HA credentials (OIDC mode needs them — unlike OAuth mode)
+    _setup_standard_mode()
+
+    # Validate OIDC-specific env vars
+    oidc_config_url = os.getenv("OIDC_CONFIG_URL")
+    oidc_client_id = os.getenv("OIDC_CLIENT_ID")
+    oidc_client_secret = os.getenv("OIDC_CLIENT_SECRET")
+    base_url = os.getenv("MCP_BASE_URL")
+
+    missing = []
+    if not oidc_config_url:
+        missing.append("OIDC_CONFIG_URL")
+    if not oidc_client_id:
+        missing.append("OIDC_CLIENT_ID")
+    if not oidc_client_secret:
+        missing.append("OIDC_CLIENT_SECRET")
+    if not base_url:
+        missing.append("MCP_BASE_URL")
+
+    if missing:
+        logger.error(
+            f"Missing required environment variables for OIDC mode: {', '.join(missing)}"
+        )
+        logger.error(
+            "OIDC mode requires an external OIDC provider (Authentik, Keycloak, Auth0, etc.)"
+        )
+        sys.exit(1)
+
+    port, path = _get_http_runtime(default_port=8086)
+
+    _run_entrypoint(
+        _run_oidc_server(
+            oidc_config_url, oidc_client_id, oidc_client_secret, base_url, port, path
+        ),
+        "OIDC server",
+    )
+
+
+async def _run_oidc_server(
+    config_url: str,
+    client_id: str,
+    client_secret: str,
+    base_url: str,
+    port: int,
+    path: str,
+) -> None:
+    """Run the OIDC-authenticated MCP server.
+
+    Unlike OAuth mode which uses OAuthProxyClient for per-user credential routing,
+    OIDC mode uses the standard HomeAssistantClient with shared credentials.
+    OIDC is purely an access gate — all authenticated users share the same HA instance.
+
+    Args:
+        config_url: OIDC discovery URL (.well-known/openid-configuration)
+        client_id: OAuth client ID from the OIDC provider
+        client_secret: OAuth client secret from the OIDC provider
+        base_url: Public HTTPS URL where this server is accessible
+        port: Port to listen on
+        path: MCP endpoint path
+    """
+    from fastmcp.server.auth.oidc_proxy import OIDCProxy
+
+    from ha_mcp.server import HomeAssistantSmartMCPServer
+
+    # Create OIDC auth provider — auto-discovers endpoints from config_url
+    auth = OIDCProxy(
+        config_url=config_url,
+        client_id=client_id,
+        client_secret=client_secret,
+        base_url=base_url,
+    )
+
+    # Standard server with shared credentials (no proxy client needed)
+    global _server
+    _server = HomeAssistantSmartMCPServer()
+    mcp_instance = _server.mcp
+    mcp_instance.auth = auth
+
+    logger.info("Server created with OIDC authentication")
+
+    tools = await mcp_instance.get_tools()
+    logger.info(
+        f"Starting OIDC-enabled MCP server with {len(tools)} tools on {base_url}{path}"
+    )
+
+    await _run_with_shutdown(
+        mcp_instance.run_async(**_http_run_kwargs("streamable-http", port, path))
+    )
+
+
 if __name__ == "__main__":
     main()
