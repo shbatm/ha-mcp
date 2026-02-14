@@ -20,5 +20,9 @@ options:
 schema:
   backup_hint: list(strong|normal|weak|auto)
   secret_path: str?
+  oidc_config_url: url?
+  oidc_client_id: str?
+  oidc_client_secret: password?
+  oidc_base_url: url?
 ports:
   9583/tcp: 9583
