@@ -697,8 +697,18 @@ def main_oidc() -> None:
     - MCP_SECRET_PATH (optional, default: "/mcp")
     - LOG_LEVEL (optional, default: INFO)
     """
+    # Configure logging for OIDC mode (force=True needed since logging may already be configured)
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    _setup_logging(log_level, force=True)
+    for logger_name in ["ha_mcp", "ha_mcp.auth", "ha_mcp.auth.provider"]:
+        logging.getLogger(logger_name).setLevel(getattr(logging, log_level))
+    logger.info(f"OIDC mode logging configured at {log_level} level")
+
     # Validate HA credentials (OIDC mode needs them — unlike OAuth mode)
-    _setup_standard_mode()
+    from ha_mcp.config import get_settings
+
+    settings = get_settings()
+    _validate_standard_credentials(settings)
 
     # Validate OIDC-specific env vars
     oidc_config_url = os.getenv("OIDC_CONFIG_URL")
