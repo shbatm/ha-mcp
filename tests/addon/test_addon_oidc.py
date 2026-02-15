@@ -38,6 +38,30 @@ class TestGetOidcConfig:
         result = _get_oidc_config(config)
         assert result == config
 
+    def test_jwt_signing_key_included_when_set(self):
+        """Config with oidc_jwt_signing_key should include it in result."""
+        config = {
+            "oidc_config_url": "https://auth.example.com/.well-known/openid-configuration",
+            "oidc_client_id": "my-client",
+            "oidc_client_secret": "my-secret",
+            "oidc_base_url": "https://mcp.example.com",
+            "oidc_jwt_signing_key": "my-signing-key-abc123",
+        }
+        result = _get_oidc_config(config)
+        assert result["oidc_jwt_signing_key"] == "my-signing-key-abc123"
+
+    def test_jwt_signing_key_excluded_when_empty(self):
+        """Empty oidc_jwt_signing_key should be excluded from result."""
+        config = {
+            "oidc_config_url": "https://auth.example.com/.well-known/openid-configuration",
+            "oidc_client_id": "my-client",
+            "oidc_client_secret": "my-secret",
+            "oidc_base_url": "https://mcp.example.com",
+            "oidc_jwt_signing_key": "",
+        }
+        result = _get_oidc_config(config)
+        assert "oidc_jwt_signing_key" not in result
+
     def test_empty_string_fields_excluded(self):
         """Empty string OIDC fields should be excluded."""
         config = {
@@ -89,6 +113,17 @@ class TestValidateOidcConfig:
             "oidc_client_id": "my-client",
             "oidc_client_secret": "my-secret",
             "oidc_base_url": "https://mcp.example.com",
+        }
+        assert _validate_oidc_config(config) is None
+
+    def test_complete_config_with_jwt_key_is_valid(self):
+        """Complete OIDC config with optional jwt signing key should be valid."""
+        config = {
+            "oidc_config_url": "https://auth.example.com/.well-known/openid-configuration",
+            "oidc_client_id": "my-client",
+            "oidc_client_secret": "my-secret",
+            "oidc_base_url": "https://mcp.example.com",
+            "oidc_jwt_signing_key": "my-signing-key",
         }
         assert _validate_oidc_config(config) is None
 

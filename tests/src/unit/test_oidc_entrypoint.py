@@ -204,6 +204,86 @@ class TestRunOidcServer:
         assert proxy_init_args["client_id"] == "test-id"
         assert proxy_init_args["client_secret"] == "test-secret"
         assert proxy_init_args["base_url"] == "https://mcp.example.com"
+        assert proxy_init_args["require_authorization_consent"] is False
+
+    @pytest.mark.asyncio
+    async def test_jwt_signing_key_passed_from_env(self):
+        """_run_oidc_server should pass OIDC_JWT_SIGNING_KEY env var to OIDCProxy."""
+        import ha_mcp.__main__ as main_module
+
+        proxy_init_args = {}
+
+        class MockOIDCProxy:
+            def __init__(self, **kwargs):
+                proxy_init_args.update(kwargs)
+
+        mock_server = MagicMock()
+        mock_mcp = MagicMock()
+        mock_mcp.get_tools = AsyncMock(return_value=[])
+
+        async def fake_run_async(**kwargs):
+            pass
+
+        mock_mcp.run_async = MagicMock(side_effect=lambda **kwargs: fake_run_async(**kwargs))
+        mock_server.mcp = mock_mcp
+
+        async def noop_shutdown(coro):
+            coro.close()
+
+        with patch.dict(os.environ, {"OIDC_JWT_SIGNING_KEY": "test-jwt-key"}, clear=False):
+            with patch("ha_mcp.__main__.OIDCProxy" if hasattr(main_module, "OIDCProxy") else "fastmcp.server.auth.oidc_proxy.OIDCProxy", MockOIDCProxy):
+                with patch("ha_mcp.server.HomeAssistantSmartMCPServer", return_value=mock_server):
+                    with patch.object(main_module, "_run_with_shutdown", side_effect=noop_shutdown):
+                        await main_module._run_oidc_server(
+                            config_url="https://auth.example.com/.well-known/openid-configuration",
+                            client_id="test-id",
+                            client_secret="test-secret",
+                            base_url="https://mcp.example.com",
+                            port=8086,
+                            path="/mcp",
+                        )
+
+        assert proxy_init_args["jwt_signing_key"] == "test-jwt-key"
+
+    @pytest.mark.asyncio
+    async def test_jwt_signing_key_none_when_unset(self):
+        """_run_oidc_server should pass None for jwt_signing_key when env var is not set."""
+        import ha_mcp.__main__ as main_module
+
+        proxy_init_args = {}
+
+        class MockOIDCProxy:
+            def __init__(self, **kwargs):
+                proxy_init_args.update(kwargs)
+
+        mock_server = MagicMock()
+        mock_mcp = MagicMock()
+        mock_mcp.get_tools = AsyncMock(return_value=[])
+
+        async def fake_run_async(**kwargs):
+            pass
+
+        mock_mcp.run_async = MagicMock(side_effect=lambda **kwargs: fake_run_async(**kwargs))
+        mock_server.mcp = mock_mcp
+
+        async def noop_shutdown(coro):
+            coro.close()
+
+        env_without_key = {k: v for k, v in os.environ.items() if k != "OIDC_JWT_SIGNING_KEY"}
+        with patch.dict(os.environ, env_without_key, clear=True):
+            with patch("ha_mcp.__main__.OIDCProxy" if hasattr(main_module, "OIDCProxy") else "fastmcp.server.auth.oidc_proxy.OIDCProxy", MockOIDCProxy):
+                with patch("ha_mcp.server.HomeAssistantSmartMCPServer", return_value=mock_server):
+                    with patch.object(main_module, "_run_with_shutdown", side_effect=noop_shutdown):
+                        await main_module._run_oidc_server(
+                            config_url="https://auth.example.com/.well-known/openid-configuration",
+                            client_id="test-id",
+                            client_secret="test-secret",
+                            base_url="https://mcp.example.com",
+                            port=8086,
+                            path="/mcp",
+                        )
+
+        assert proxy_init_args["jwt_signing_key"] is None
 
     @pytest.mark.asyncio
     async def test_sets_auth_on_mcp_instance(self):

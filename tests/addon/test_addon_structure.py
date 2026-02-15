@@ -79,6 +79,7 @@ class TestAddonStructure:
             "oidc_client_id": "str?",
             "oidc_client_secret": "password?",
             "oidc_base_url": "url?",
+            "oidc_jwt_signing_key": "password?",
         }
         for field, expected_type in oidc_fields.items():
             assert field in config["schema"], f"schema must include {field} field"
