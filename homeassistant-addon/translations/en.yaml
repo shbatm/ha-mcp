@@ -23,3 +23,7 @@ configuration:
     name: Public Base URL
     description: |
       The public HTTPS URL where this MCP server is accessible through your reverse proxy (e.g., https://mcp.example.com). Required for OIDC redirect flows.
+  oidc_jwt_signing_key:
+    name: JWT Signing Key
+    description: |
+      Secret key for signing session tokens. Set this to persist logins across add-on restarts. Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"

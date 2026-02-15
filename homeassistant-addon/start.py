@@ -90,6 +90,7 @@ def _get_oidc_config(config: dict) -> dict[str, str]:
         "oidc_client_id": config.get("oidc_client_id", ""),
         "oidc_client_secret": config.get("oidc_client_secret", ""),
         "oidc_base_url": config.get("oidc_base_url", ""),
+        "oidc_jwt_signing_key": config.get("oidc_jwt_signing_key", ""),
     }
     return {k: v for k, v in oidc_fields.items() if v and v.strip()}
 
@@ -101,7 +102,7 @@ def _validate_oidc_config(oidc_config: dict[str, str]) -> str | None:
         Error message if partial config detected, None if valid or empty.
     """
     all_fields = {"oidc_config_url", "oidc_client_id", "oidc_client_secret", "oidc_base_url"}
-    present = set(oidc_config.keys())
+    present = set(oidc_config.keys()) & all_fields  # Only check required fields
 
     if not present:
         return None  # No OIDC config — use secret path mode
@@ -140,6 +141,11 @@ def _run_oidc_mode(oidc_config: dict[str, str], port: int) -> int:
     os.environ["MCP_BASE_URL"] = oidc_config["oidc_base_url"]
     os.environ["MCP_PORT"] = str(port)
     os.environ["MCP_SECRET_PATH"] = "/mcp"
+
+    # Optional: JWT signing key for persistent sessions across restarts
+    jwt_key = oidc_config.get("oidc_jwt_signing_key", "")
+    if jwt_key:
+        os.environ["OIDC_JWT_SIGNING_KEY"] = jwt_key
 
     base_url = oidc_config["oidc_base_url"].rstrip("/")
 

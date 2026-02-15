@@ -693,6 +693,8 @@ def main_oidc() -> None:
     - MCP_BASE_URL (required): Public HTTPS URL where this server is accessible
     - HOMEASSISTANT_URL (required): Home Assistant instance URL
     - HOMEASSISTANT_TOKEN (required): Home Assistant long-lived access token or supervisor token
+    - OIDC_JWT_SIGNING_KEY (optional): Secret key for signing FastMCP JWTs. Set this to
+      persist sessions across server restarts. Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
     - MCP_PORT (optional, default: 8086)
     - MCP_SECRET_PATH (optional, default: "/mcp")
     - LOG_LEVEL (optional, default: INFO)
@@ -777,6 +779,8 @@ async def _run_oidc_server(
         client_id=client_id,
         client_secret=client_secret,
         base_url=base_url,
+        require_authorization_consent=False,  # OIDC provider handles consent
+        jwt_signing_key=os.getenv("OIDC_JWT_SIGNING_KEY"),  # Persist tokens across restarts
     )
 
     # Standard server with shared credentials (no proxy client needed)
