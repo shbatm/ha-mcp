@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import Field
 
 from ..errors import create_entity_not_found_error, create_validation_error
-from .helpers import exception_to_structured_error, log_tool_usage
+from .helpers import exception_to_structured_error, log_tool_usage, raise_tool_error
 from .util_helpers import (
     add_timezone_metadata,
     coerce_bool_param,
@@ -212,36 +212,34 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                     fuzzy_searcher = create_fuzzy_searcher(threshold=80)
 
                     # Convert to format expected by fuzzy searcher
-                    entities_for_search = []
-                    for entity in all_area_entities:
-                        entities_for_search.append(
-                            {
-                                "entity_id": entity.get("entity_id", ""),
-                                "attributes": {
-                                    "friendly_name": entity.get("friendly_name", "")
-                                },
-                                "state": entity.get("state", "unknown"),
-                            }
-                        )
+                    entities_for_search = [
+                        {
+                            "entity_id": entity.get("entity_id", ""),
+                            "attributes": {
+                                "friendly_name": entity.get("friendly_name", "")
+                            },
+                            "state": entity.get("state", "unknown"),
+                        }
+                        for entity in all_area_entities
+                    ]
 
                     matches, total_matches = fuzzy_searcher.search_entities(
                         entities_for_search, query, limit, offset
                     )
 
                     # Format matches similar to smart_entity_search
-                    results = []
-                    for match in matches:
-                        results.append(
-                            {
-                                "entity_id": match["entity_id"],
-                                "friendly_name": match["friendly_name"],
-                                "domain": match["domain"],
-                                "state": match["state"],
-                                "score": match["score"],
-                                "match_type": match["match_type"],
-                                "area_filter": area_filter,
-                            }
-                        )
+                    results = [
+                        {
+                            "entity_id": match["entity_id"],
+                            "friendly_name": match["friendly_name"],
+                            "domain": match["domain"],
+                            "state": match["state"],
+                            "score": match["score"],
+                            "match_type": match["match_type"],
+                            "area_filter": area_filter,
+                        }
+                        for match in matches
+                    ]
 
                     pagination = _build_pagination_metadata(total_matches, offset, limit, results)
 
@@ -266,7 +264,7 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                     return await add_timezone_metadata(client, search_data)
                 else:
                     # Just area filter, return area results with enhanced format
-                    if "areas" in area_result and area_result["areas"]:
+                    if area_result.get("areas"):
                         first_area = next(iter(area_result["areas"].values()))
                         by_domain = first_area.get("entities", {})
 
@@ -442,20 +440,15 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                     "domain_filter": domain_filter,
                     "area_filter": area_filter,
                 },
-            )
-            # Add search-specific suggestions
-            if "error" in error_response and isinstance(error_response["error"], dict):
-                error_response["error"]["suggestions"] = [
+                raise_error=False,
+                suggestions=[
                     "Check Home Assistant connection",
                     "Try simpler search terms",
                     "Check area/domain filter spelling",
-                ]
-            else:
-                logger.warning(
-                    f"Unexpected error response structure, could not add suggestions: "
-                    f"{type(error_response.get('error'))}"
-                )
-            return await add_timezone_metadata(client, error_response)
+                ],
+            )
+            error_with_tz = await add_timezone_metadata(client, error_response)
+            raise_tool_error(error_with_tz)
 
     @mcp.tool(
         annotations={
@@ -627,25 +620,19 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                 f"error={e}",
                 exc_info=True,
             )
-            error_response = exception_to_structured_error(
+            return exception_to_structured_error(
                 e,
                 context={
                     "query": query,
                     "search_types": parsed_search_types,
                     "limit": limit,
                 },
-            )
-            if "error" in error_response and isinstance(error_response["error"], dict):
-                error_response["error"]["suggestions"] = [
+                raise_error=False,
+                suggestions=[
                     "Check Home Assistant connection",
                     "Try simpler search terms",
-                ]
-            else:
-                logger.warning(
-                    f"Unexpected error response structure, could not add suggestions: "
-                    f"{type(error_response.get('error'))}"
-                )
-            return error_response
+                ],
+            )
 
     @mcp.tool(
         annotations={
@@ -673,6 +660,7 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                 error_response = exception_to_structured_error(
                     e,
                     context={"entity_id": entity_id},
+                    raise_error=False,
                 )
             # Add entity-specific suggestions
             if "error" in error_response and isinstance(error_response["error"], dict):
@@ -681,7 +669,8 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                     "Check Home Assistant connection",
                     "Use ha_search_entities() to find correct entity IDs",
                 ]
-            return await add_timezone_metadata(client, error_response)
+            error_with_tz = await add_timezone_metadata(client, error_response)
+            raise_tool_error(error_with_tz)
 
     @mcp.tool(
         annotations={
@@ -764,7 +753,8 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
                 except Exception as e:
                     logger.warning(f"Failed to fetch state for '{entity_id}': {e}")
                     return exception_to_structured_error(
-                        e, context={"entity_id": entity_id}
+                        e, context={"entity_id": entity_id},
+                        raise_error=False,
                     )
 
             results = await asyncio.gather(
@@ -807,6 +797,7 @@ def register_search_tools(mcp: Any, client: Any, **kwargs: Any) -> None:
         except Exception as e:
             logger.error(f"Error getting bulk states: {e}", exc_info=True)
             error_response = exception_to_structured_error(
-                e, context={"entity_ids": entity_ids}
+                e, context={"entity_ids": entity_ids},
+                raise_error=False,
             )
             return await add_timezone_metadata(client, error_response)

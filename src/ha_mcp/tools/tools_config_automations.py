@@ -17,7 +17,12 @@ from ..errors import (
     create_validation_error,
 )
 from .helpers import exception_to_structured_error, log_tool_usage, raise_tool_error
-from .util_helpers import coerce_bool_param, parse_json_param, wait_for_entity_registered, wait_for_entity_removed
+from .util_helpers import (
+    coerce_bool_param,
+    parse_json_param,
+    wait_for_entity_registered,
+    wait_for_entity_removed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,19 +258,15 @@ def register_config_automation_tools(mcp: Any, client: Any, **kwargs: Any) -> No
                 raise_tool_error(error_response)
 
             logger.error(f"Error getting automation: {e}")
-            error_response = exception_to_structured_error(
+            exception_to_structured_error(
                 e,
                 context={"identifier": identifier, "action": "get"},
-                raise_error=False,
-            )
-            # Add automation-specific suggestions
-            if "error" in error_response and isinstance(error_response["error"], dict):
-                error_response["error"]["suggestions"] = [
+                suggestions=[
                     "Verify automation exists using ha_search_entities(domain_filter='automation')",
                     "Check Home Assistant connection",
                     "Use ha_get_domain_docs('automation') for configuration help",
-                ]
-            raise_tool_error(error_response)
+                ],
+            )
 
     @mcp.tool(
         annotations={
@@ -478,21 +479,17 @@ def register_config_automation_tools(mcp: Any, client: Any, **kwargs: Any) -> No
             raise
         except Exception as e:
             logger.error(f"Error upserting automation: {e}")
-            error_response = exception_to_structured_error(
+            exception_to_structured_error(
                 e,
                 context={"identifier": identifier},
-                raise_error=False,
-            )
-            # Add automation-specific suggestions
-            if "error" in error_response and isinstance(error_response["error"], dict):
-                error_response["error"]["suggestions"] = [
+                suggestions=[
                     "Check automation configuration format",
                     "Ensure required fields: alias, trigger, action",
                     "Use entity_id format: automation.morning_routine or unique_id",
                     "Use ha_search_entities(domain_filter='automation') to find automations",
                     "Use ha_get_domain_docs('automation') for comprehensive configuration help",
-                ]
-            raise_tool_error(error_response)
+                ],
+            )
 
     @mcp.tool(
         annotations={

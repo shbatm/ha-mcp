@@ -202,7 +202,7 @@ def _run_secret_path_mode(secret_path: str, port: int) -> int:
 
     try:
         log_info("Importing ha_mcp module...")
-        from ha_mcp.__main__ import mcp, _get_timestamped_uvicorn_log_config
+        from ha_mcp.__main__ import _get_timestamped_uvicorn_log_config, mcp
 
         log_info("Starting MCP server...")
         mcp.run(
@@ -211,6 +211,7 @@ def _run_secret_path_mode(secret_path: str, port: int) -> int:
             port=port,
             path=secret_path,
             log_level="info",
+            stateless_http=True,
             uvicorn_config={"log_config": _get_timestamped_uvicorn_log_config()},
         )
     except Exception as e:

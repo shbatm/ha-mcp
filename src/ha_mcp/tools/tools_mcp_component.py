@@ -14,7 +14,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from .helpers import exception_to_structured_error, log_tool_usage, raise_tool_error
+from .helpers import exception_to_structured_error, log_tool_usage
 from .util_helpers import add_timezone_metadata
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def register_mcp_component_tools(mcp, client, **kwargs):
     logger.info("MCP tools installer enabled via feature flag")
 
     # Import HACS helpers - we depend on HACS functionality
-    from .tools_hacs import _check_hacs_available, CATEGORY_MAP
+    from .tools_hacs import CATEGORY_MAP, _check_hacs_available
 
     @mcp.tool(
         annotations={
@@ -276,8 +276,12 @@ def register_mcp_component_tools(mcp, client, **kwargs):
                     result["message"] += ". Home Assistant is restarting."
                     result["note"] = "Wait 1-5 minutes for Home Assistant to restart."
                 except Exception as restart_error:
-                    # Connection errors during restart are expected
-                    if "connection" in str(restart_error).lower():
+                    # Connection/proxy errors during restart are expected
+                    # (HA closes connections, proxies may return 504)
+                    if any(
+                        pattern in str(restart_error).lower()
+                        for pattern in ("connect", "closed", "504")
+                    ):
                         result["restarted"] = True
                         result["message"] += ". Home Assistant is restarting."
                         result["note"] = (
@@ -292,17 +296,12 @@ def register_mcp_component_tools(mcp, client, **kwargs):
             return await add_timezone_metadata(client, result)
 
         except Exception as e:
-            error_response = exception_to_structured_error(
+            exception_to_structured_error(
                 e,
                 context={"tool": "ha_install_mcp_tools", "restart": restart},
-                raise_error=False,
-            )
-            if "error" in error_response and isinstance(error_response["error"], dict):
-                suggestions = [
+                suggestions=[
                     "Verify HACS is installed: https://hacs.xyz/",
                     "Check Home Assistant logs for errors",
                     "Ensure GitHub is accessible",
-                ]
-                error_response["error"]["suggestions"] = suggestions
-                error_response["error"]["suggestion"] = suggestions[0]
-            raise_tool_error(error_response)
+                ],
+            )
