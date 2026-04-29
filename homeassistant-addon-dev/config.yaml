@@ -39,5 +39,10 @@ schema:
   tool_search_max_results: int(2,10)?
   disabled_tools: str?
   pinned_tools: str?
+  oidc_config_url: url?
+  oidc_client_id: str?
+  oidc_client_secret: password?
+  oidc_base_url: url?
+  oidc_jwt_signing_key: password?
 ports:
   9583/tcp: 9583

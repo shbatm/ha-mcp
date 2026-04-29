@@ -247,6 +247,185 @@ def migrate_skills_as_tools_default(
     return stored_value
 
 
+def _get_oidc_config(config: dict) -> dict[str, str]:
+    """Extract OIDC configuration from add-on options.
+
+    Returns:
+        Dict with OIDC fields that are set (non-empty).
+    """
+    oidc_fields = {
+        "oidc_config_url": config.get("oidc_config_url", ""),
+        "oidc_client_id": config.get("oidc_client_id", ""),
+        "oidc_client_secret": config.get("oidc_client_secret", ""),
+        "oidc_base_url": config.get("oidc_base_url", ""),
+        "oidc_jwt_signing_key": config.get("oidc_jwt_signing_key", ""),
+    }
+    return {k: v for k, v in oidc_fields.items() if v and v.strip()}
+
+
+def _validate_oidc_config(oidc_config: dict[str, str]) -> str | None:
+    """Validate OIDC configuration completeness.
+
+    Returns:
+        Error message if partial config detected, None if valid or empty.
+    """
+    all_fields = {"oidc_config_url", "oidc_client_id", "oidc_client_secret", "oidc_base_url"}
+    present = set(oidc_config.keys()) & all_fields  # Only check required fields
+
+    if not present:
+        return None  # No OIDC config — use secret path mode
+
+    missing = all_fields - present
+    if missing:
+        friendly_names = {
+            "oidc_config_url": "OIDC Discovery URL",
+            "oidc_client_id": "OIDC Client ID",
+            "oidc_client_secret": "OIDC Client Secret",
+            "oidc_base_url": "OIDC Public Base URL",
+        }
+        missing_names = [friendly_names[f] for f in sorted(missing)]
+        return (
+            f"Incomplete OIDC configuration. Missing: {', '.join(missing_names)}. "
+            f"Either set all OIDC fields or leave them all empty to use secret path mode."
+        )
+
+    return None  # All fields present — valid
+
+
+def _run_oidc_mode(oidc_config: dict[str, str], port: int) -> int:
+    """Start the server in OIDC authentication mode.
+
+    Args:
+        oidc_config: Validated OIDC configuration dict.
+        port: Internal container port.
+
+    Returns:
+        Exit code.
+    """
+    # Set OIDC environment variables for ha_mcp.__main__.main_oidc()
+    os.environ["OIDC_CONFIG_URL"] = oidc_config["oidc_config_url"]
+    os.environ["OIDC_CLIENT_ID"] = oidc_config["oidc_client_id"]
+    os.environ["OIDC_CLIENT_SECRET"] = oidc_config["oidc_client_secret"]
+    os.environ["MCP_BASE_URL"] = oidc_config["oidc_base_url"]
+    os.environ["MCP_PORT"] = str(port)
+    os.environ["MCP_SECRET_PATH"] = "/mcp"
+
+    # Optional: JWT signing key for persistent sessions across restarts
+    jwt_key = oidc_config.get("oidc_jwt_signing_key", "")
+    if jwt_key:
+        os.environ["OIDC_JWT_SIGNING_KEY"] = jwt_key
+
+    base_url = oidc_config["oidc_base_url"].rstrip("/")
+
+    log_info("")
+    log_info("=" * 80)
+    log_info("  OIDC Authentication Mode")
+    log_info("")
+    log_info(f"  MCP Endpoint: {base_url}/mcp")
+    log_info(f"  OIDC Provider: {oidc_config['oidc_config_url']}")
+    log_info(f"  Auth Callback: {base_url}/auth/callback")
+    log_info("")
+    log_info("  Users must authenticate via your OIDC provider before accessing MCP.")
+    log_info("  Ensure your reverse proxy forwards HTTPS traffic to port %d." % port)
+    log_info("=" * 80)
+    log_info("")
+
+    try:
+        log_info("Starting OIDC-authenticated MCP server...")
+        from ha_mcp.__main__ import main_oidc
+
+        main_oidc()
+    except Exception as e:
+        log_error(f"Failed to start OIDC server: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return 1
+
+    return 0
+
+
+def _run_secret_path_mode(secret_path: str, port: int) -> int:
+    """Start the server in secret path mode (no authentication).
+
+    Args:
+        secret_path: The obfuscated URL path.
+        port: Internal container port.
+
+    Returns:
+        Exit code.
+    """
+    log_info("")
+    log_info("=" * 80)
+    log_info(f"  MCP Server URL: http://<home-assistant-ip>:{port}{secret_path}")
+    log_info("")
+    log_info(f"  Secret Path: {secret_path}")
+    log_info("")
+    log_info("  IMPORTANT: Copy this exact URL - the secret path is required!")
+    log_info("  This path is auto-generated and persisted to /data/secret_path.txt")
+    log_info("")
+    log_info("  TIP: For better security, configure OIDC authentication in the add-on options.")
+    log_info("=" * 80)
+    log_info("")
+
+    # Configure logging before server start (v3 removed log_level from run())
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Import and register browser landing before server start
+    log_info("Importing ha_mcp module...")
+    from ha_mcp.__main__ import (
+        StatelessSessionLogFilter,
+        _get_server,
+        _get_timestamped_uvicorn_log_config,
+        mcp,
+        register_browser_landing,
+    )
+    from ha_mcp.settings_ui import register_settings_routes
+
+    register_browser_landing(mcp, secret_path)
+    # Mount settings UI routes both at root (for HA ingress proxy) and
+    # under the secret path (for direct port access). See
+    # register_settings_routes docstring for the auth model. Use the
+    # server's actual FastMCP instance (not the _DeferredMCP wrapper)
+    # so mypy doesn't trip over the duck-typed __getattr__ forwarding.
+    server_instance = _get_server()
+    register_settings_routes(server_instance.mcp, server_instance, secret_path=secret_path)
+    logging.getLogger("mcp.server.streamable_http").addFilter(
+        StatelessSessionLogFilter()
+    )
+
+    try:
+        log_info("Starting MCP server...")
+        mcp.run(
+            transport="http",
+            host="0.0.0.0",
+            port=port,
+            path=secret_path,
+            stateless_http=True,
+            uvicorn_config={"log_config": _get_timestamped_uvicorn_log_config()},
+        )
+    except KeyboardInterrupt:
+        log_info("Interrupted, exiting")
+        return 0
+    except BaseException as e:
+        import traceback
+
+        log_error(f"MCP server crashed: {e}")
+        traceback.print_exc(file=sys.stderr)
+        # Log the root cause if this exception was chained
+        cause = e.__cause__ or e.__context__
+        if cause:
+            log_error(f"Caused by: {cause}")
+            traceback.print_exception(type(cause), cause, cause.__traceback__, file=sys.stderr)
+        if isinstance(e, SystemExit):
+            return int(e.code) if isinstance(e.code, int) else 1
+        return 1
+
+    log_info("MCP server stopped")
+    return 0
+
+
 def main() -> int:
     """Start the Home Assistant MCP Server."""
     log_info("Starting Home Assistant MCP Server...")
@@ -312,15 +491,6 @@ def main() -> int:
         log_error("SUPERVISOR_TOKEN not found! Cannot authenticate.")
         return 1
 
-    # Generate or retrieve secret path
-    secret_path = get_or_create_secret_path(data_dir, custom_secret_path)
-
-    # Persist secret path back to addon options so other addons (e.g. the
-    # webhook proxy) can read it via `GET /addons/{slug}/info → options`
-    # instead of scraping it from this addon's logs (#941). Details and
-    # the skip/retry rules live in maybe_persist_secret_path().
-    maybe_persist_secret_path(config, secret_path, supervisor_token)
-
     log_info(f"Backup hint mode: {backup_hint}")
 
     # Set up environment for ha-mcp
@@ -344,73 +514,27 @@ def main() -> int:
     # Fixed port (internal container port)
     port = 9583
 
-    log_info("")
-    log_info("=" * 80)
-    log_info(f"🔐 MCP Server URL: http://<home-assistant-ip>:9583{secret_path}")
-    log_info("")
-    log_info(f"   Secret Path: {secret_path}")
-    log_info("")
-    log_info("   ⚠️  IMPORTANT: Copy this exact URL - the secret path is required!")
-    log_info("   💡 This path is auto-generated and persisted to /data/secret_path.txt")
-    log_info("=" * 80)
-    log_info("")
+    # Check for OIDC configuration
+    oidc_config = _get_oidc_config(config)
+    oidc_error = _validate_oidc_config(oidc_config)
 
-    # Configure logging before server start (v3 removed log_level from run())
-    import logging
-    logging.basicConfig(level=logging.INFO)
-
-    # Import and register browser landing before server start
-    log_info("Importing ha_mcp module...")
-    from ha_mcp.__main__ import (
-        StatelessSessionLogFilter,
-        _get_server,
-        _get_timestamped_uvicorn_log_config,
-        mcp,
-        register_browser_landing,
-    )
-    from ha_mcp.settings_ui import register_settings_routes
-
-    register_browser_landing(mcp, secret_path)
-    # Mount settings UI routes both at root (for HA ingress proxy) and
-    # under the secret path (for direct port access). See
-    # register_settings_routes docstring for the auth model. Use the
-    # server's actual FastMCP instance (not the _DeferredMCP wrapper)
-    # so mypy doesn't trip over the duck-typed __getattr__ forwarding.
-    server_instance = _get_server()
-    register_settings_routes(server_instance.mcp, server_instance, secret_path=secret_path)
-    logging.getLogger("mcp.server.streamable_http").addFilter(
-        StatelessSessionLogFilter()
-    )
-
-    try:
-        log_info("Starting MCP server...")
-        mcp.run(
-            transport="http",
-            host="0.0.0.0",
-            port=port,
-            path=secret_path,
-            stateless_http=True,
-            uvicorn_config={"log_config": _get_timestamped_uvicorn_log_config()},
-        )
-    except KeyboardInterrupt:
-        log_info("Interrupted, exiting")
-        return 0
-    except BaseException as e:
-        import traceback
-
-        log_error(f"MCP server crashed: {e}")
-        traceback.print_exc(file=sys.stderr)
-        # Log the root cause if this exception was chained
-        cause = e.__cause__ or e.__context__
-        if cause:
-            log_error(f"Caused by: {cause}")
-            traceback.print_exception(type(cause), cause, cause.__traceback__, file=sys.stderr)
-        if isinstance(e, SystemExit):
-            return int(e.code) if isinstance(e.code, int) else 1
+    if oidc_error:
+        log_error(oidc_error)
         return 1
 
-    log_info("MCP server stopped")
-    return 0
+    if oidc_config:
+        return _run_oidc_mode(oidc_config, port)
+
+    # Fall back to secret path mode
+    secret_path = get_or_create_secret_path(data_dir, custom_secret_path)
+
+    # Persist secret path back to addon options so other addons (e.g. the
+    # webhook proxy) can read it via `GET /addons/{slug}/info → options`
+    # instead of scraping it from this addon's logs (#941). Details and
+    # the skip/retry rules live in maybe_persist_secret_path().
+    maybe_persist_secret_path(config, secret_path, supervisor_token)
+
+    return _run_secret_path_mode(secret_path, port)
 
 
 if __name__ == "__main__":
