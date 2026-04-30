@@ -947,6 +947,11 @@ def main_oidc() -> None:
         )
         sys.exit(1)
 
+    assert oidc_config_url is not None
+    assert oidc_client_id is not None
+    assert oidc_client_secret is not None
+    assert base_url is not None
+
     port, path = _get_http_runtime(default_port=8086)
 
     _run_entrypoint(
@@ -1000,11 +1005,7 @@ async def _run_oidc_server(
     mcp_instance.auth = auth
 
     logger.info("Server created with OIDC authentication")
-
-    tools = await mcp_instance.get_tools()
-    logger.info(
-        f"Starting OIDC-enabled MCP server with {len(tools)} tools on {base_url}{path}"
-    )
+    logger.info(f"Starting OIDC-enabled MCP server at {base_url}{path}")
 
     await _run_with_shutdown(
         mcp_instance.run_async(**_http_run_kwargs("streamable-http", port, path))
