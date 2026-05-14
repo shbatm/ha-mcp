@@ -36,6 +36,11 @@ schema:
   enable_skills: bool?
   enable_skills_as_tools: bool?
   enable_tool_search: bool?
+  oidc_config_url: url?
+  oidc_client_id: str?
+  oidc_client_secret: password?
+  oidc_base_url: url?
+  oidc_jwt_signing_key: password?
 # Add-on exposes HTTP port for MCP communication (fixed internal port)
 ports:
   9583/tcp: 9583
